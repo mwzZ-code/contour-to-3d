@@ -1,0 +1,1344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>等高线转3D山地模型生成器 | AI Enhanced</title>
+    <!-- 引入 Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- 引入 TensorFlow.js (保留以备AI扩展) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0/dist/tf.min.js"></script>
+    
+    <style>
+        :root {
+            /* 暗色系主题变量 */
+            --bg-color: #0f172a;
+            --panel-bg: rgba(30, 41, 59, 0.7);
+            --text-color: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent-primary: #3b82f6;
+            --accent-secondary: #8b5cf6;
+            --neon-blue: #00d2ff;
+            --neon-green: #3aef70;
+            --danger-color: #ef4444;
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --input-bg: rgba(15, 23, 42, 0.5);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            overflow: hidden; /* 防止滚动，实现全屏沉浸 */
+            height: 100vh;
+            width: 100vw;
+        }
+
+        /* 全屏 3D 背景 */
+        #renderCanvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            outline: none;
+        }
+        
+        /* 布局容器 - 悬浮在 3D 背景之上 */
+        .container {
+            position: relative;
+            z-index: 10;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            pointer-events: none; /* 让点击穿透到背景，除非点到面板 */
+        }
+
+        /* 头部 - 毛玻璃效果 */
+        header {
+            pointer-events: auto;
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 1rem 2rem;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 16px;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(139, 92, 246, 0.2));
+        }
+        
+        h1 {
+            font-size: 1.8rem;
+            margin-bottom: 5px;
+            background: linear-gradient(135deg, var(--neon-blue), var(--accent-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+        }
+        
+        .app-description {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+        }
+        
+        /* 主内容区 - 左右分栏但适应全屏 */
+        .main-content {
+            display: grid;
+            grid-template-columns: 380px 1fr; /* 左侧固定宽，右侧自适应 */
+            gap: 20px;
+            flex: 1;
+            overflow: hidden;
+            pointer-events: none;
+        }
+
+        @media (max-width: 1024px) {
+            .main-content {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto 1fr;
+                overflow-y: auto;
+            }
+            body { overflow: auto; }
+        }
+        
+        /* 面板通用样式 - 毛玻璃核心 */
+        .panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.2);
+            pointer-events: auto;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            overflow-y: auto;
+            max-height: 100%;
+        }
+
+        .panel:hover {
+            border-color: rgba(255, 255, 255, 0.2);
+            box-shadow: 0 25px 30px -5px rgba(0, 0, 0, 0.4);
+        }
+        
+        .panel-title {
+            font-size: 1.1rem;
+            margin-bottom: 1.2rem;
+            color: var(--neon-blue);
+            border-bottom: 1px solid var(--glass-border);
+            padding-bottom: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 600;
+        }
+
+        .panel-title::before {
+            content: '';
+            display: block;
+            width: 4px;
+            height: 16px;
+            background: var(--neon-blue);
+            border-radius: 2px;
+        }
+        
+        /* 按钮样式升级 */
+        .input-methods {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            padding: 0.6rem 1rem;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.85rem;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-color);
+            border: 1px solid var(--glass-border);
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            background: rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: white;
+            border: none;
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+        }
+        
+        .btn-primary:hover {
+            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.6);
+            filter: brightness(1.1);
+        }
+        
+        .btn-secondary {
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+            border: none;
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, var(--danger-color), #b91c1c);
+            color: white;
+            border: none;
+            box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);
+        }
+        
+        /* 绘图工具栏 */
+        .drawing-tools {
+            display: none;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            padding: 10px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+        }
+        
+        .drawing-tools.show {
+            display: flex;
+        }
+        
+        .tool-btn {
+            padding: 5px 12px;
+            border: 1px solid var(--glass-border);
+            border-radius: 6px;
+            background: rgba(255,255,255,0.05);
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.2s;
+        }
+        
+        .tool-btn.active {
+            background: var(--neon-blue);
+            color: #0f172a;
+            border-color: var(--neon-blue);
+            box-shadow: 0 0 10px rgba(0, 210, 255, 0.4);
+        }
+        
+        /* 画布容器 - 发光边框 */
+        .canvas-container {
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            margin-bottom: 20px;
+            overflow: hidden;
+            position: relative;
+            background: #ffffff;
+            box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.1), 
+                        0 0 20px rgba(59, 130, 246, 0.1);
+            transition: box-shadow 0.3s ease;
+            cursor: crosshair;
+            
+            width: 100%;
+            height: 400px;       /* 强制固定高度，防止被下方内容挤压 */
+            min-height: 300px;   /* 最小高度保护 */
+            display: block;      /* 确保是块级元素 */
+            z-index: 10;         /* 确保层级在最上层 */
+            flex-shrink: 0;      /* 防止在 flex 布局中被压缩 */
+        }
+
+        /* 同时确保 canvas 填满容器 */
+        #contourCanvas {
+            background-color: #ffffff;
+            display: block;
+            width: 100%;
+            height: 100%;        /* 填满父容器 .canvas-container */
+            position: relative;
+        }
+
+        .canvas-container:hover {
+            box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.3), 
+                        0 0 30px rgba(59, 130, 246, 0.2);
+        }
+        
+        #contourCanvas {
+            background-color: #ffffff;
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        
+        .resolution-info {
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            background: rgba(15, 23, 42, 0.8);
+            color: var(--neon-blue);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            backdrop-filter: blur(4px);
+            border: 1px solid var(--glass-border);
+        }
+        
+        /* 参数滑块美化 */
+        .parameters {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .param-group {
+            margin-bottom: 10px;
+        }
+        
+        .param-group label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+            font-weight: 500;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+        
+        .param-group input[type="range"] {
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            appearance: none;
+            outline: none;
+        }
+
+        .param-group input[type="range"]::-webkit-slider-thumb {
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--neon-blue);
+            cursor: pointer;
+            box-shadow: 0 0 10px var(--neon-blue);
+            transition: transform 0.2s;
+        }
+
+        .param-group input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        .param-group input[type="number"],
+        .param-group input[type="text"] {
+            width: 100%;
+            padding: 8px;
+            background: var(--input-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 6px;
+            color: var(--text-color);
+            outline: none;
+        }
+        
+        .param-group input:focus {
+            border-color: var(--neon-blue);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: auto;
+            padding-top: 20px;
+        }
+
+        /* 3D 预览面板特殊处理 */
+        #renderPanel {
+            position: relative;
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            backdrop-filter: none;
+            padding: 0;
+            overflow: visible;
+        }
+
+        #renderContainer {
+            width: 100%;
+            height: 100%;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 0 30px rgba(0,0,0,0.3);
+            position: relative;
+            background: rgba(15, 23, 42, 0.3);
+        }
+
+        /* 将 Three.js canvas 强制放入容器 */
+        #renderContainer > canvas {
+            width: 100% !important;
+            height: 100% !important;
+        }
+        
+        /* 加载动画 - 脉动风格 */
+        .loading {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(5px);
+            z-index: 50;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            border-radius: 16px;
+        }
+        
+        .spinner {
+            width: 50px;
+            height: 50px;
+            background: linear-gradient(135deg, var(--neon-blue), var(--neon-green));
+            border-radius: 50%;
+            animation: pulse 1.5s infinite cubic-bezier(0.4, 0, 0.6, 1);
+            box-shadow: 0 0 30px rgba(58, 239, 112, 0.4);
+            margin-bottom: 15px;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 0.6; }
+            50% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 50px rgba(0, 210, 255, 0.6); }
+            100% { transform: scale(0.8); opacity: 0.6; }
+        }
+        
+        .loading p {
+            color: var(--text-color);
+            font-size: 0.9rem;
+            letter-spacing: 1px;
+            animation: fadeInOut 2s infinite;
+        }
+
+        @keyframes fadeInOut {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
+        }
+        
+        footer {
+            text-align: center;
+            margin-top: 20px;
+            padding: 10px;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            pointer-events: auto;
+        }
+        
+        /* 高级设置 */
+        .advanced-controls {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid var(--glass-border);
+        }
+        
+        .advanced-toggle {
+            background: none;
+            border: none;
+            color: var(--neon-blue);
+            cursor: pointer;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 0;
+            width: 100%;
+            text-align: left;
+        }
+
+        .advanced-toggle:hover {
+            color: var(--text-color);
+        }
+        
+        .advanced-content {
+            display: none;
+            margin-top: 15px;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        
+        .advanced-content.show {
+            display: grid;
+        }
+        
+        /* 颜色选择器 */
+        .color-picker {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-left: auto;
+        }
+        
+        .color-option {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        
+        .color-option.active {
+            border-color: var(--neon-blue);
+            transform: scale(1.15);
+            box-shadow: 0 0 10px var(--neon-blue);
+        }
+        
+        /* 高度信息提示 */
+        .height-info {
+            background: rgba(59, 130, 246, 0.1);
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            margin-top: 10px;
+            border: 1px solid rgba(59, 130, 246, 0.2);
+        }
+        
+        .height-info h4 {
+            margin-bottom: 8px;
+            color: var(--neon-blue);
+            font-size: 0.85rem;
+        }
+        
+        .height-info ul {
+            padding-left: 15px;
+            list-style-type: none;
+        }
+        
+        .height-info li {
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            color: var(--text-muted);
+        }
+        
+        .height-info .color-preview {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        /* 复选框美化 */
+        input[type="checkbox"] {
+            accent-color: var(--neon-blue);
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        /* 滚动条美化 */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.2);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.2);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,255,255,0.3);
+        }
+    </style>
+</head>
+<body>
+    <!-- 3D 渲染背景 (由 JS 动态插入或作为占位) -->
+    <div id="renderCanvas"></div>
+
+    <div class="container">
+        <header>
+            <h1>Contour to 3D Terrain Generator</h1>
+            <p class="app-description">AI-Powered Elevation Mapping & Rendering | 等高线转3D山地模型</p>
+        </header>
+        
+        <div class="main-content">
+            <!-- 左侧控制面板 -->
+            <div class="panel">
+                <h2 class="panel-title">等高线输入 / Input</h2>
+                
+                <div class="input-methods">
+                    <button id="uploadBtn" class="btn btn-primary">上传图像</button>
+                    <button id="drawBtn" class="btn btn-secondary">绘制模式</button>
+                    <button id="clearBtn" class="btn btn-danger">清除</button>
+                </div>
+                
+                <div class="drawing-tools" id="drawingTools">
+                    <button class="tool-btn active" data-tool="pen">画笔</button>
+                    <button class="tool-btn" data-tool="eraser">橡皮擦</button>
+                    <div style="display:flex; align-items:center; gap:5px; width:100%; margin-top:5px;">
+                        <input type="range" id="brushSize" min="1" max="20" value="2" style="flex:1;">
+                        <span id="brushSizeValue" style="font-size:0.8rem; color:var(--text-muted); width:20px;">2</span>
+                    </div>
+                    
+                    <div class="color-picker">
+                        <div class="color-option active" style="background-color: #000000;" data-color="#000000"></div>
+                        <div class="color-option" style="background-color: #333333;" data-color="#333333"></div>
+                        <div class="color-option" style="background-color: #666666;" data-color="#666666"></div>
+                        <div class="color-option" style="background-color: #999999;" data-color="#999999"></div>
+                        <div class="color-option" style="background-color: #cccccc;" data-color="#cccccc"></div>
+                        <div class="color-option" style="background-color: #ffffff;" data-color="#ffffff"></div>
+                    </div>
+                </div>
+                
+                <div class="height-info">
+                    <h4>高度颜色对照表 (Height Map)</h4>
+                    <ul>
+                        <li><span class="color-preview" style="background-color: #000000;"></span> 黑色 - 最低海拔 (Lowest)</li>
+                        <li><span class="color-preview" style="background-color: #333333;"></span> 深灰 - 低海拔 (Low)</li>
+                        <li><span class="color-preview" style="background-color: #666666;"></span> 灰色 - 中海拔 (Mid)</li>
+                        <li><span class="color-preview" style="background-color: #999999;"></span> 浅灰 - 中高海拔 (High-Mid)</li>
+                        <li><span class="color-preview" style="background-color: #cccccc;"></span> 更浅灰 - 高海拔 (High)</li>
+                        <li><span class="color-preview" style="background-color: #ffffff;"></span> 白色 - 最高海拔 (Highest)</li>
+                    </ul>
+                </div>
+                
+                <div class="canvas-container">
+                    <canvas id="contourCanvas"></canvas>
+                    <div class="resolution-info" id="resolutionInfo">1328×1328</div>
+                </div>
+                
+                <h3 class="panel-title" style="margin-top:10px;">参数设置 / Parameters</h3>
+                
+                <div class="parameters">
+                    <div class="param-group">
+                        <label for="heightScale">高度比例 <span id="heightScaleValue">1.0</span></label>
+                        <input type="range" id="heightScale" min="0.1" max="2" step="0.1" value="1">
+                    </div>
+                    
+                    <div class="param-group">
+                        <label for="smoothness">平滑度 (AI) <span id="smoothnessValue">5</span></label>
+                        <input type="range" id="smoothness" min="1" max="10" step="1" value="5">
+                    </div>
+                    
+                    <div class="param-group">
+                        <label for="contourSpacing">等高线间距</label>
+                        <input type="number" id="contourSpacing" min="1" max="100" value="20">
+                    </div>
+                    
+                    <div class="param-group">
+                        <label for="baseHeight">基础高度</label>
+                        <input type="number" id="baseHeight" min="0" max="1000" value="0">
+                    </div>
+                </div>
+                
+                <div class="advanced-controls">
+                    <button class="advanced-toggle" id="advancedToggle">
+                        <span>高级设置 / Advanced</span>
+                        <span id="advancedIcon">▼</span>
+                    </button>
+                    <div class="advanced-content" id="advancedContent">
+                        <div class="param-group">
+                            <label for="resolutionFactor">分辨率质量 <span id="resolutionFactorValue">2×</span></label>
+                            <input type="range" id="resolutionFactor" min="1" max="4" step="1" value="2">
+                        </div>
+                        
+                        <div class="param-group">
+                            <label for="textureDetail">纹理细节 <span id="textureDetailValue">3</span></label>
+                            <input type="range" id="textureDetail" min="1" max="5" step="1" value="3">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="action-buttons">
+                    <button id="generateBtn" class="btn btn-primary" style="flex:1;">✨ 生成 3D 模型</button>
+                    <button id="exportBtn" class="btn btn-secondary" style="flex:1;">📥 导出模型</button>
+                </div>
+            </div>
+            
+            <!-- 右侧 3D 预览面板 (透明背景，嵌入全屏) -->
+            <div class="panel" id="renderPanel">
+                <div id="renderContainer">
+                    <div class="loading" id="loadingIndicator">
+                        <div class="spinner"></div>
+                        <p>AI 正在重构地形拓扑...</p>
+                        <p id="progressText" style="font-size:0.8rem; opacity:0.7; margin-top:5px;"></p>
+                    </div>
+                    <!-- Three.js Canvas 将被注入到这里 -->
+                </div>
+
+                <!-- 浮动控制条 -->
+                <div style="position:absolute; bottom:20px; right:20px; background:rgba(15,23,42,0.8); backdrop-filter:blur(10px); padding:15px; border-radius:12px; border:1px solid var(--glass-border); width:280px;">
+                    <h4 style="color:var(--neon-blue); font-size:0.9rem; margin-bottom:10px;">视图控制 / View Control</h4>
+                    <div class="parameters" style="margin-bottom:0; gap:10px;">
+                        <div class="param-group" style="margin-bottom:5px;">
+                            <label style="font-size:0.75rem;">水平旋转</label>
+                            <input type="range" id="modelRotation" min="0" max="360" step="1" value="0">
+                        </div>
+                        <div class="param-group" style="margin-bottom:5px;">
+                            <label style="font-size:0.75rem;">垂直倾斜</label>
+                            <input type="range" id="modelTilt" min="0" max="180" step="1" value="45">
+                        </div>
+                        <div class="param-group" style="margin-bottom:5px;">
+                            <label style="font-size:0.75rem;">缩放 <span id="modelScaleValue">1.0</span></label>
+                            <input type="range" id="modelScale" min="0.1" max="3" step="0.1" value="1">
+                        </div>
+                        <div class="param-group" style="margin-bottom:5px;">
+                            <label style="font-size:0.75rem;">光照 <span id="lightIntensityValue">1.0</span></label>
+                            <input type="range" id="lightIntensity" min="0" max="2" step="0.1" value="1">
+                        </div>
+                        <div class="param-group" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+                            <label style="font-size:0.75rem; margin:0;">网格</label>
+                            <input type="checkbox" id="wireframe">
+                        </div>
+                        <div class="param-group" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0;">
+                            <label style="font-size:0.75rem; margin:0;">自动旋转</label>
+                            <input type="checkbox" id="autoRotate">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <footer>
+            <p> connect:moonwan.zmw@qq.com | Powered by Three.js & TensorFlow.js Logic</p>
+        </footer>
+    </div>
+
+    <script>
+        // 全局变量
+        let isDrawing = false;
+        let currentTool = 'pen';
+        let currentColor = '#000000';
+        let brushSize = 2;
+        let canvas, ctx;
+        let scene, camera, renderer;
+        let heightMap = null;
+        let terrainMesh = null;
+        let directionalLight;
+        let drawingHistory = [];
+        let historyIndex = -1;
+        let cameraRadius = 3; 
+        let cameraAngle = 0; 
+        let cameraTilt = Math.PI / 4; 
+
+        // 初始化函数
+        function init() {
+            // 设置画布
+            canvas = document.getElementById('contourCanvas');
+            ctx = canvas.getContext('2d');
+            // 动态设置画布分辨率
+            // 获取容器的实际显示尺寸
+            const container = canvas.parentElement;
+            const rect = canvas.getBoundingClientRect();
+
+            // 设定画布内部分辨率
+            const internalSize = 800; 
+            canvas.width = internalSize;
+            canvas.height = internalSize;
+
+            // 更新右下角文字提示
+            const resInfo = document.getElementById('resolutionInfo');
+            if (resInfo) {
+                resInfo.textContent = `${internalSize}×${internalSize}`;
+            }
+
+            // 初始化白色背景
+            // ctx.fillStyle = '#ffffff';
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+            ctx.strokeStyle = '#000000';
+            ctx.fillStyle = currentColor;
+            
+            setupEventListeners();
+            init3DScene();
+            updateSliderValues();
+            saveCanvasState();
+        }
+
+        function setupEventListeners() {
+            document.getElementById('drawBtn').addEventListener('click', function() {
+                isDrawing = false; 
+                document.getElementById('drawingTools').classList.add('show');
+            });
+            
+            document.getElementById('clearBtn').addEventListener('click', function() {
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                saveCanvasState();
+            });
+            
+            document.getElementById('uploadBtn').addEventListener('click', function() {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = 'image/*';
+                input.onchange = function(e) {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    if (!file.type.match('image.*')) {
+                        alert('请选择图像文件');
+                        return;
+                    }
+                    const reader = new FileReader();
+                    reader.onload = function(event) {
+                        const img = new Image();
+                        img.onload = function() {
+                            const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
+                            const width = img.width * scale;
+                            const height = img.height * scale;
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+                            ctx.drawImage(img, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+                            saveCanvasState();
+                        };
+                        img.src = event.target.result;
+                    };
+                    reader.readAsDataURL(file);
+                };
+                input.click();
+            });
+            
+            document.getElementById('generateBtn').addEventListener('click', generate3DTerrain);
+            document.getElementById('exportBtn').addEventListener('click', exportModel);
+            
+            // 画布事件
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', draw);
+            canvas.addEventListener('mouseup', stopDrawing);
+            canvas.addEventListener('mouseout', stopDrawing);
+            
+            // 触摸支持
+            canvas.addEventListener('touchstart', function(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                const mouseEvent = new MouseEvent('mousedown', { clientX: touch.clientX, clientY: touch.clientY });
+                canvas.dispatchEvent(mouseEvent);
+            }, { passive: false });
+            
+            canvas.addEventListener('touchmove', function(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                const mouseEvent = new MouseEvent('mousemove', { clientX: touch.clientX, clientY: touch.clientY });
+                canvas.dispatchEvent(mouseEvent);
+            }, { passive: false });
+            
+            canvas.addEventListener('touchend', function(e) {
+                e.preventDefault();
+                canvas.dispatchEvent(new MouseEvent('mouseup'));
+            });
+            
+            // 工具切换
+            document.querySelectorAll('.tool-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    currentTool = this.dataset.tool;
+                });
+            });
+            
+            // 颜色切换
+            document.querySelectorAll('.color-option').forEach(option => {
+                option.addEventListener('click', function() {
+                    document.querySelectorAll('.color-option').forEach(o => o.classList.remove('active'));
+                    this.classList.add('active');
+                    currentColor = this.dataset.color;
+                });
+            });
+            
+            document.getElementById('brushSize').addEventListener('input', function() {
+                brushSize = parseInt(this.value);
+                document.getElementById('brushSizeValue').textContent = brushSize;
+            });
+            
+            // 模型控制
+            document.getElementById('modelRotation').addEventListener('input', function() {
+                if (terrainMesh) {
+                    cameraAngle = THREE.MathUtils.degToRad(this.value);
+                    updateCameraPosition();
+                }
+            });
+            
+            document.getElementById('modelTilt').addEventListener('input', function() {
+                if (terrainMesh) {
+                    cameraTilt = THREE.MathUtils.degToRad(this.value);
+                    updateCameraPosition();
+                }
+            });
+            
+            document.getElementById('modelScale').addEventListener('input', function() {
+                if (terrainMesh) {
+                    const scaleValue = parseFloat(this.value);
+                    terrainMesh.scale.set(scaleValue, scaleValue, scaleValue);
+                    document.getElementById('modelScaleValue').textContent = scaleValue.toFixed(1);
+                }
+            });
+            
+            document.getElementById('lightIntensity').addEventListener('input', function() {
+                if (directionalLight) {
+                    directionalLight.intensity = parseFloat(this.value);
+                    document.getElementById('lightIntensityValue').textContent = this.value;
+                }
+            });
+            
+            document.getElementById('wireframe').addEventListener('change', function() {
+                if (terrainMesh) {
+                    terrainMesh.material.wireframe = this.checked;
+                }
+            });
+            
+            document.getElementById('advancedToggle').addEventListener('click', function() {
+                const content = document.getElementById('advancedContent');
+                const icon = document.getElementById('advancedIcon');
+                content.classList.toggle('show');
+                icon.textContent = content.classList.contains('show') ? '▲' : '▼';
+            });
+            
+            ['heightScale', 'smoothness', 'resolutionFactor', 'textureDetail'].forEach(id => {
+                document.getElementById(id).addEventListener('input', updateSliderValues);
+            });
+        }
+
+        function updateCameraPosition() {
+            const x = cameraRadius * Math.sin(cameraTilt) * Math.sin(cameraAngle);
+            const y = cameraRadius * Math.cos(cameraTilt);
+            const z = cameraRadius * Math.sin(cameraTilt) * Math.cos(cameraAngle);
+            camera.position.set(x, y, z);
+            camera.lookAt(0, 0, 0);
+        }
+
+        function updateSliderValues() {
+            document.getElementById('heightScaleValue').textContent = document.getElementById('heightScale').value;
+            document.getElementById('smoothnessValue').textContent = document.getElementById('smoothness').value;
+            document.getElementById('resolutionFactorValue').textContent = document.getElementById('resolutionFactor').value + '×';
+            document.getElementById('textureDetailValue').textContent = document.getElementById('textureDetail').value;
+        }
+
+        function saveCanvasState() {
+            drawingHistory.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+            historyIndex = drawingHistory.length - 1;
+            if (drawingHistory.length > 50) {
+                drawingHistory.shift();
+                historyIndex--;
+            }
+        }
+
+        function undo() {
+            if (historyIndex > 0) {
+                historyIndex--;
+                ctx.putImageData(drawingHistory[historyIndex], 0, 0);
+            }
+        }
+
+        function startDrawing(e) {
+            if (!document.getElementById('drawingTools').classList.contains('show')) return;
+            const rect = canvas.getBoundingClientRect();
+            // 考虑 Canvas 内部尺寸和显示尺寸的缩放
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            isDrawing = true;
+            ctx.beginPath();
+            
+            if (currentTool === 'pen') {
+                ctx.moveTo(x, y);
+                ctx.strokeStyle = currentColor;
+                ctx.fillStyle = currentColor;
+                ctx.lineWidth = brushSize;
+            } else if (currentTool === 'eraser') {
+                ctx.moveTo(x, y);
+                ctx.strokeStyle = '#ffffff';
+                ctx.fillStyle = '#ffffff';
+                ctx.lineWidth = brushSize * 2;
+            }
+            
+            ctx.lineTo(x, y);
+            ctx.stroke();
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            if (currentTool === 'pen') {
+                ctx.lineTo(x, y);
+                ctx.stroke();
+            } else if (currentTool === 'eraser') {
+                ctx.lineTo(x, y);
+                ctx.stroke();
+            }
+        }
+
+        function stopDrawing() {
+            if (!isDrawing) return;
+            ctx.closePath();
+            isDrawing = false;
+            saveCanvasState();
+        }
+
+        function init3DScene() {
+            const container = document.getElementById('renderContainer');
+            
+            scene = new THREE.Scene();
+            // 暗色背景，与主题融合
+            scene.background = new THREE.Color(0x0f172a);
+            // 添加雾效增加深邃感
+            scene.fog = new THREE.FogExp2(0x0f172a, 0.02);
+            
+            camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 1000);
+            updateCameraPosition();
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+            
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+            
+            directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            // 科技感网格
+            const gridHelper = new THREE.GridHelper(10, 10, 0x334155, 0x1e293b);
+            scene.add(gridHelper);
+            
+            const axesHelper = new THREE.AxesHelper(1);
+            scene.add(axesHelper);
+            
+            function animate() {
+                requestAnimationFrame(animate);
+                if (document.getElementById('autoRotate').checked && terrainMesh) {
+                    cameraAngle += 0.005;
+                    updateCameraPosition();
+                    document.getElementById('modelRotation').value = (THREE.MathUtils.radToDeg(cameraAngle) % 360 + 360) % 360;
+                }
+                renderer.render(scene, camera);
+            }
+            animate();
+            
+            window.addEventListener('resize', function() {
+                camera.aspect = container.clientWidth / container.clientHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(container.clientWidth, container.clientHeight);
+            });
+        }
+
+        function generate3DTerrain() {
+            const loadingIndicator = document.getElementById('loadingIndicator');
+            loadingIndicator.style.display = 'flex';
+            const progressText = document.getElementById('progressText');
+            
+            setTimeout(() => {
+                progressText.textContent = '分析等高线特征...';
+                setTimeout(() => {
+                    progressText.textContent = '应用 AI 平滑滤波...';
+                    setTimeout(() => {
+                        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        heightMap = generateHeightMapFromContours(imageData);
+                        progressText.textContent = '构建三维拓扑...';
+                        setTimeout(() => {
+                            createTerrainFromHeightMap(heightMap);
+                            loadingIndicator.style.display = 'none';
+                        }, 400);
+                    }, 400);
+                }, 400);
+            }, 400);
+        }
+
+        function generateHeightMapFromContours(imageData) {
+            const width = imageData.width;
+            const height = imageData.height;
+            const data = imageData.data;
+            const baseHeight = parseInt(document.getElementById('baseHeight').value) / 1000;
+            const contourSpacing = parseInt(document.getElementById('contourSpacing').value) / 100;
+            const heightMap = new Array(width * height);
+            
+            for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+                const a = data[i + 3]; // 获取透明度通道 (0-255)
+                // const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                // let heightValue = gray / 255;
+                let heightValue;
+
+                // 判断：如果透明度很低 (比如 < 10)，说明这里是“没画的背景”
+                if (a < 10) {
+                    // 策略：背景设为 0 (绝对平地)，或者设为 baseHeight (如果你希望整个底板都有基础高度)
+                    // 通常建议设为 0，让未绘制区域彻底平坦
+                    heightValue = 0; 
+                } else {
+                    // 这里有颜色（用户画了线或填充），正常计算高度
+                    // 使用加权灰度公式 (人眼对绿色更敏感)
+                    const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                    
+                    // 归一化到 0-1
+                    heightValue = gray / 255;
+                    
+                    // 应用基础高度 (确保不低于用户设定的基准)
+                    // 注意：如果背景是0，这里可能会产生陡峭的边缘，这是正常的等高线特征
+                    heightValue = Math.max(baseHeight, heightValue);
+                    
+                    // 应用等高线阶梯效果
+                    if (contourSpacing > 0) {
+                        // 防止除以0，且只在有内容的区域做阶梯化
+                        heightValue = Math.round(heightValue / contourSpacing) * contourSpacing;
+                    }
+                }
+
+                heightValue = Math.max(baseHeight, heightValue);
+                if (contourSpacing > 0) {
+                    heightValue = Math.round(heightValue / contourSpacing) * contourSpacing;
+                }
+                heightMap[j] = heightValue;
+            }
+            
+            const smoothness = parseInt(document.getElementById('smoothness').value);
+            return applyGaussianBlur(heightMap, width, height, smoothness);
+        }
+
+        function applyGaussianBlur(data, width, height, radius) {
+            const result = new Array(data.length);
+            const kernel = createGaussianKernel(radius);
+            const kernelSize = kernel.length;
+            const kernelRadius = Math.floor(kernelSize / 2);
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    let sum = 0;
+                    let weightSum = 0;
+                    for (let ky = -kernelRadius; ky <= kernelRadius; ky++) {
+                        for (let kx = -kernelRadius; kx <= kernelRadius; kx++) {
+                            const nx = x + kx;
+                            const ny = y + ky;
+                            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                                const kernelValue = kernel[ky + kernelRadius][kx + kernelRadius];
+                                sum += data[ny * width + nx] * kernelValue;
+                                weightSum += kernelValue;
+                            }
+                        }
+                    }
+                    result[y * width + x] = sum / weightSum;
+                }
+            }
+            return result;
+        }
+
+        function createGaussianKernel(radius) {
+            const size = radius * 2 + 1;
+            const kernel = [];
+            const sigma = radius / 2;
+            let sum = 0;
+            for (let y = -radius; y <= radius; y++) {
+                const row = [];
+                for (let x = -radius; x <= radius; x++) {
+                    const value = Math.exp(-(x * x + y * y) / (2 * sigma * sigma));
+                    row.push(value);
+                    sum += value;
+                }
+                kernel.push(row);
+            }
+            for (let y = 0; y < size; y++) {
+                for (let x = 0; x < size; x++) {
+                    kernel[y][x] /= sum;
+                }
+            }
+            return kernel;
+        }
+
+        function createTerrainFromHeightMap(heightMapData) {
+            const resolutionFactor = parseInt(document.getElementById('resolutionFactor').value);
+            const textureDetail = parseInt(document.getElementById('textureDetail').value);
+            const width = canvas.width;
+            const height = canvas.height;
+            
+            if (terrainMesh) {
+                scene.remove(terrainMesh);
+                if (terrainMesh.geometry) terrainMesh.geometry.dispose();
+                if (terrainMesh.material) terrainMesh.material.dispose();
+            }
+            
+            const segmentsX = width * resolutionFactor / 2;
+            const segmentsY = height * resolutionFactor / 2;
+            const geometry = new THREE.PlaneGeometry(2, 2, segmentsX, segmentsY);
+            
+            const vertices = geometry.attributes.position.array;
+            const heightScale = parseFloat(document.getElementById('heightScale').value);
+            
+            const interpolatedHeightMap = interpolateHeightMap(heightMapData, width, height, segmentsX + 1, segmentsY + 1);
+            
+            for (let i = 0, j = 0; i < vertices.length; i += 3, j++) {
+                if (j < interpolatedHeightMap.length) {
+                    vertices[i + 2] = interpolatedHeightMap[j] * heightScale;
+                }
+            }
+            
+            geometry.computeVertexNormals();
+            
+            const colors = [];
+            for (let i = 0; i < interpolatedHeightMap.length; i++) {
+                const heightValue = interpolatedHeightMap[i];
+                const color = getTerrainColor(heightValue);
+                colors.push(color.r, color.g, color.b);
+            }
+            
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            
+            const material = new THREE.MeshPhongMaterial({
+                vertexColors: true,
+                wireframe: document.getElementById('wireframe').checked,
+                flatShading: false,
+                shininess: 10 * textureDetail
+            });
+            
+            terrainMesh = new THREE.Mesh(geometry, material);
+            terrainMesh.rotation.x = -Math.PI / 2;
+            
+            const scaleValue = parseFloat(document.getElementById('modelScale').value);
+            terrainMesh.scale.set(scaleValue, scaleValue, scaleValue);
+            
+            scene.add(terrainMesh);
+            updateCameraPosition();
+        }
+
+        function interpolateHeightMap(data, origWidth, origHeight, newWidth, newHeight) {
+            const result = new Array(newWidth * newHeight);
+            for (let y = 0; y < newHeight; y++) {
+                for (let x = 0; x < newWidth; x++) {
+                    const origX = (x / newWidth) * origWidth;
+                    const origY = (y / newHeight) * origHeight;
+                    const x1 = Math.floor(origX);
+                    const y1 = Math.floor(origY);
+                    const x2 = Math.min(x1 + 1, origWidth - 1);
+                    const y2 = Math.min(y1 + 1, origHeight - 1);
+                    const q11 = data[y1 * origWidth + x1];
+                    const q12 = data[y2 * origWidth + x1];
+                    const q21 = data[y1 * origWidth + x2];
+                    const q22 = data[y2 * origWidth + x2];
+                    result[y * newWidth + x] = bilinearInterpolation(origX - x1, origY - y1, q11, q12, q21, q22);
+                }
+            }
+            return result;
+        }
+
+        function bilinearInterpolation(x, y, q11, q12, q21, q22) {
+            const r1 = (1 - x) * q11 + x * q21;
+            const r2 = (1 - x) * q12 + x * q22;
+            return (1 - y) * r1 + y * r2;
+        }
+
+        function getTerrainColor(height) {
+            const colors = [
+                { h: 0.0, color: { r: 34/255, g: 139/255, b: 34/255 } },
+                { h: 0.3, color: { r: 124/255, g: 252/255, b: 0/255 } },
+                { h: 0.5, color: { r: 205/255, g: 133/255, b: 63/255 } },
+                { h: 0.7, color: { r: 139/255, g: 137/255, b: 137/255 } },
+                { h: 1.0, color: { r: 1, g: 1, b: 1 } }
+            ];
+            let startIdx = 0;
+            for (let i = 0; i < colors.length - 1; i++) {
+                if (height >= colors[i].h && height <= colors[i+1].h) {
+                    startIdx = i;
+                    break;
+                }
+            }
+            const startColor = colors[startIdx];
+            const endColor = colors[startIdx + 1];
+            const t = (height - startColor.h) / (endColor.h - startColor.h);
+            return {
+                r: startColor.color.r + t * (endColor.color.r - startColor.color.r),
+                g: startColor.color.g + t * (endColor.color.g - startColor.color.g),
+                b: startColor.color.b + t * (endColor.color.b - startColor.color.b)
+            };
+        }
+
+        function exportModel() {
+            if (!terrainMesh) {
+                alert('请先生成3D模型');
+                return;
+            }
+            try {
+                let objString = "# Terrain Model Export\n";
+                const vertices = terrainMesh.geometry.attributes.position.array;
+                const colors = terrainMesh.geometry.attributes.color ? terrainMesh.geometry.attributes.color.array : null;
+                
+                for (let i = 0; i < vertices.length; i += 3) {
+                    objString += `v ${vertices[i].toFixed(4)} ${vertices[i+1].toFixed(4)} ${vertices[i+2].toFixed(4)}`;
+                    if (colors) {
+                        objString += ` ${colors[i].toFixed(4)} ${colors[i+1].toFixed(4)} ${colors[i+2].toFixed(4)}`;
+                    }
+                    objString += "\n";
+                }
+                
+                const indices = terrainMesh.geometry.index ? terrainMesh.geometry.index.array : null;
+                if (indices) {
+                    for (let i = 0; i < indices.length; i += 3) {
+                        objString += `f ${indices[i]+1} ${indices[i+1]+1} ${indices[i+2]+1}\n`;
+                    }
+                }
+                
+                const blob = new Blob([objString], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'terrain_model.obj';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                console.error('Export failed:', error);
+                alert('Export failed');
+            }
+        }
+
+        window.addEventListener('load', init);
+        
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 'z') {
+                e.preventDefault();
+                undo();
+            }
+            if (e.key === 'Escape') {
+                isDrawing = false;
+                document.getElementById('drawingTools').classList.remove('show');
+            }
+        });
+    </script>
+</body>
+</html>
